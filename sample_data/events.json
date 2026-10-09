@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Cloud Computing Workshop",
+    "description": "Synthetic demonstration event for local RSVP practice.",
+    "event_type": "WORKSHOP",
+    "date": "2030-08-01",
+    "time": "10:00",
+    "end_time": "12:00",
+    "venue": "Online classroom",
+    "online_link": "https://example.invalid/workshop",
+    "capacity": 100,
+    "deadline": "2030-07-31T18:00:00+00:00"
+  }
+]
