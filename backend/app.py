@@ -6,10 +6,13 @@ from typing import Optional
 from fastapi import FastAPI, Depends, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, String, Integer, ForeignKey, UniqueConstraint, Text, DateTime, Boolean, func, and_, text, event as sqlalchemy_event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, sessionmaker
+import httpx
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env')
@@ -69,8 +72,24 @@ def validpw(p,s):
 def issue(uid):
     p=base64.urlsafe_b64encode(json.dumps({'uid':uid,'exp':time.time()+86400,'jti':secrets.token_urlsafe(16)}).encode()).decode().rstrip('='); sig=base64.urlsafe_b64encode(hmac.new(SECRET.encode(),p.encode(),hashlib.sha256).digest()).decode().rstrip('='); return p+'.'+sig
 def auth(authorization:Optional[str]=Header(None),db:Session=Depends(dbdep)):
+    raw=authorization.removeprefix('Bearer ') if authorization else ''
+    if raw.count('.')==2 and os.getenv('SUPABASE_URL') and os.getenv('SUPABASE_ANON_KEY'):
+        try:
+            with httpx.Client(timeout=5) as client:
+                response=client.get(os.getenv('SUPABASE_URL').rstrip('/')+'/auth/v1/user',headers={'apikey':os.getenv('SUPABASE_ANON_KEY'),'Authorization':f'Bearer {raw}'})
+            if response.status_code!=200:raise ValueError()
+            identity=response.json(); email=identity.get('email')
+            if not email:raise ValueError()
+            u=db.query(User).filter(func.lower(User.email)==email.lower()).first()
+            if not u:
+                metadata=identity.get('user_metadata') or {}; role=str(metadata.get('role','ATTENDEE')).upper()
+                if role not in ('ATTENDEE','ORGANIZER'):role='ATTENDEE'
+                u=User(email=email.lower(),name=str(metadata.get('full_name') or email.split('@')[0])[:80],password='supabase-auth',role=role)
+                db.add(u);db.commit();db.refresh(u)
+            return u
+        except Exception:raise HTTPException(401,'Sign in required')
     try:
-        p,s=authorization.removeprefix('Bearer ').split('.'); want=base64.urlsafe_b64encode(hmac.new(SECRET.encode(),p.encode(),hashlib.sha256).digest()).decode().rstrip('=')
+        p,s=raw.split('.'); want=base64.urlsafe_b64encode(hmac.new(SECRET.encode(),p.encode(),hashlib.sha256).digest()).decode().rstrip('=')
         if not hmac.compare_digest(s,want): raise ValueError()
         data=json.loads(base64.urlsafe_b64decode(p+'='*(-len(p)%4)))
         if data['exp']<time.time(): raise ValueError()
@@ -88,11 +107,18 @@ class InviteIn(BaseModel): emails:list[str]=Field(min_length=1,max_length=200)
 class ReadIn(BaseModel): is_read:bool=True
 class WaitlistIn(BaseModel): join:bool=True
 @app.get('/')
-def home():return FileResponse(ROOT/'frontend'/'index.html')
+def home():
+    built=ROOT/'frontend'/'dist'/'index.html'
+    return FileResponse(built if built.exists() else ROOT/'frontend'/'index.html')
+@app.get('/config.json')
+def public_config():
+    return JSONResponse({'supabaseUrl':os.getenv('SUPABASE_URL'),'supabaseAnonKey':os.getenv('SUPABASE_ANON_KEY')})
 @app.get('/style.css')
 def stylesheet():return FileResponse(ROOT/'frontend'/'style.css',media_type='text/css')
 @app.get('/app.js')
 def javascript():return FileResponse(ROOT/'frontend'/'app.js',media_type='application/javascript')
+if (ROOT/'frontend'/'dist'/'assets').exists():
+    app.mount('/assets',StaticFiles(directory=ROOT/'frontend'/'dist'/'assets'),name='assets')
 @app.get('/health')
 def health(db:Session=Depends(dbdep)):
     try:db.execute(text('SELECT 1'))

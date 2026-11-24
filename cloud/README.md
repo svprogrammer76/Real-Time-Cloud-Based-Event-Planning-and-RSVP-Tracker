@@ -1,21 +1,23 @@
 # Cloud deployment guide
 
-## What is implemented locally
+## Current deployment status
 
-The checked-in app is FastAPI + SQLAlchemy + SQLite by default. `DATABASE_URL` selects the database; `APP_SECRET` signs and revokes sessions. The container build uses environment variables and a non-root user. This repository does not contain cloud credentials, a live cloud project, a managed auth provider integration, WebSockets, or proof of a deployment. Do not claim those resources were deployed.
+As of 2026-11-24, the app is deployed as a Render Docker web service built from this GitHub repository and connected to a Supabase PostgreSQL database through the Supabase session pooler. `DATABASE_URL` is configured in the Render environment and is not stored in source control. Verify that `APP_SECRET` is set to a strong non-default value before sharing the service publicly. The user reported a successful `/health` check and app walkthrough. The public service URL is not recorded here.
+
+Local development still uses SQLite by default. The deployed service uses PostgreSQL. The Docker image builds and serves the React frontend, runs as a non-root user and honors the platform-provided `PORT`. The React auth form supports Supabase Auth when its project URL and anon key are configured; existing custom-token accounts remain valid during migration. Event updates still use polling; Supabase Realtime/WebSockets and external email/push delivery are not implemented.
 
 ## Student cloud path
 
-Use an architecture with static frontend/CDN, a container-capable API host, managed PostgreSQL, secret environment variables, TLS, logs, backup and a budget alert. Verify each provider's current free eligibility, sleeping/retention limits, region, database availability, and payment requirements before choosing it; free tiers and policies change.
+The current student setup uses one Render Docker web service for both the FastAPI API and browser assets, plus Supabase PostgreSQL. Render builds from the GitHub repository and deploys on pushed changes. Supabase's session-pooler URL is supplied as `DATABASE_URL`; `APP_SECRET` is a separate Render secret. The service's `/health` route checks database reachability. Verify provider pricing, quotas, sleep/retention limits and backups in the provider dashboards; terms and costs can change.
 
-1. Create a managed PostgreSQL instance and a private database user with only app-level permissions.
-2. Apply the SQLAlchemy schema/migrations. For a first clean database, starting the app creates tables; production should use versioned migrations before release.
-3. Build and deploy this Dockerfile to a container host. Set `DATABASE_URL` to the provider's private connection URL and `APP_SECRET` to a long randomly generated secret in the host's secret store.
-4. Restrict inbound database connections to the application, require TLS for public traffic, and set allowed origins if the frontend is hosted on a separate origin (CORS configuration is a production follow-up).
-5. Check `/health`, create synthetic organizer/attendee accounts, verify the two-browser RSVP flow and capacity limit, and inspect host logs.
-6. Enable database backups and test a restore. Configure usage alerts and document teardown.
+1. Connect the GitHub repository to a Render Docker web service; the root `Dockerfile` builds the app.
+2. Set `DATABASE_URL` to the session-pooler connection string copied from Supabase's Connect dialog. Keep its host and project-qualified username exactly as supplied; do not commit the URL.
+3. Set a long random `APP_SECRET` in Render's environment-variable settings. Do not use the local default; verify the value in the service settings.
+4. Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` from the Supabase project settings in Render. Set the Supabase Auth site URL to the Render service URL and allow that URL as a redirect. Never put the service-role key in the browser or use it for this setting.
+5. Deploy and check `/health`; it should return `{"ok":true,"database":"reachable"}`. Test the browser app with synthetic accounts and event data.
+6. Review Supabase backup/retention options and provider usage limits. The service URL is intentionally not embedded in this repository.
 
-Current cloud-app limitation: event capacity uses SQLite `BEGIN IMMEDIATE` only when the selected SQL dialect is SQLite. PostgreSQL requires an explicit event-row lock or atomic conditional update before production use; change this implementation and run concurrency tests before switching the database. The `create_all` startup plus additive SQLite migrations are suitable for this local student demo, not a multi-instance production migration process.
+Important limitation: event capacity uses SQLite `BEGIN IMMEDIATE` only when the selected dialect is SQLite. The deployed PostgreSQL RSVP flow does not yet use an event-row lock or atomic conditional reservation, so concurrent requests may oversubscribe an event. This deployment is appropriate for a controlled student demo, not high-concurrency public production. Add PostgreSQL locking and concurrency tests before relying on strict capacity enforcement. Startup `create_all` and additive SQLite migrations are not a versioned production migration process.
 
 ## Advanced AWS reference
 

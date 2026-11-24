@@ -2,7 +2,13 @@
 
 ## Abstract
 
-This project provides a virtual event planning and RSVP application. An organizer creates and manages an event, records invitees, monitors responses, shares announcements and reviews attendance metrics. Attendees discover events, respond Going/Maybe/Not Going, cancel or join a FIFO waitlist, and receive in-app updates. The local implementation uses FastAPI, SQLAlchemy, SQLite, signed sessions and a browser client with two-second polling. It demonstrates core cloud application patterns without requiring paid services. Managed cloud services are documented as a deployment target and are not represented as already deployed.
+This project provides a virtual event planning and RSVP application. An organizer creates and manages an event, records invitees, monitors responses, shares announcements and reviews attendance metrics. Attendees discover events, respond Going/Maybe/Not Going, cancel or join a FIFO waitlist, and receive in-app updates. The app uses a React frontend, FastAPI, SQLAlchemy and PostgreSQL in its Render/Supabase student deployment; the dashboard uses two-second polling. Supabase Auth is supported when configured, with existing custom-token accounts retained during migration.
+
+## Current deployment status
+
+As of 2026-11-24, the application is deployed from this GitHub repository to a Render Docker web service. Render receives the Supabase session-pooler connection URL through a service environment variable; database credentials are not stored in the repository. The user reported that the `/health` database check and an app walkthrough completed successfully. Confirm in Render that `APP_SECRET` is set to a strong non-default value before sharing the service publicly. No public service URL or deployment screenshot is recorded here.
+
+The deployment is a student demonstration, not a production-ready service. The app's capacity-write path uses `BEGIN IMMEDIATE` only with SQLite; PostgreSQL RSVP and waitlist operations still need database-level locking or atomic reservation logic and concurrency tests. The schema is initialized with SQLAlchemy `create_all` rather than a versioned production migration system. Organizer self-registration remains enabled, and the app still needs Supabase Auth credentials configured in Render before the managed sign-in flow is active there.
 
 ## Introduction and problem statement
 
@@ -28,7 +34,7 @@ Event platforms, conferences, college festivals, webinars, workshops, meetups, t
 
 ## Cloud computing concepts
 
-Hosted deployment provides a SaaS-style experience. A managed app and DB are PaaS; virtual-machine and network management is IaaS. The local app demonstrates REST, auth, RBAC, relational constraints, transaction logic, environment-based configuration and health checks. Polling demonstrates state synchronization. A production evolution can add a CDN, gateway/load balancer, managed database, provider auth, WebSockets/SSE, serverless notification functions, queues, secret manager, logs/metrics, backups and CI/CD. Those cloud resources are design targets, not currently provisioned.
+Hosted deployment provides a SaaS-style experience. A managed app and DB are PaaS; virtual-machine and network management is IaaS. The deployed Render service and Supabase database demonstrate hosted compute, managed relational storage, environment-based secrets, REST, auth, RBAC, health checks and polling-based state synchronization. Managed identity, WebSockets/SSE, external notification functions, queues, a CDN, stronger production monitoring and tested backups remain possible extensions; they are not part of the current deployment.
 
 ## Architecture and technology
 
@@ -47,7 +53,7 @@ EVENT 1 ── N INVITATION / ANNOUNCEMENT / NOTIFICATION
 
 ## Authentication and authorization
 
-Registration hashes passwords using PBKDF2 with a random salt. Login returns an HMAC-signed bearer token with a 24-hour expiry. Logout revokes the token signature in the database. API dependencies resolve the user for protected calls. Organizer-only operations check role and ownership; attendees can change only their own RSVP and notification. Organizer self-selection is allowed only in this synthetic local demo and must be restricted in a public deployment.
+The React sign-in flow uses Supabase Auth when configured. FastAPI validates Supabase access tokens against the Auth user endpoint and maps the authenticated email and metadata to the app's relational user record. Legacy local accounts still use salted PBKDF2 hashes and 24-hour HMAC-signed bearer tokens with server-side logout revocation during migration. Organizer-only operations check role and ownership; attendees can change only their own RSVP and notification. Organizer self-selection is allowed only in this synthetic local demo and must be restricted in a public deployment.
 
 ## Event, RSVP and real-time workflow
 
@@ -65,11 +71,11 @@ Organizer announcements are persisted and copied into in-app notices for current
 
 ## API, implementation and testing
 
-The API endpoint/method/body/access/status-code table is in `docs/API_REFERENCE.md`. Tests cover assets, password/login, role and ownership rules, capacity, waitlist promotion, cancellation, notifications and metrics using isolated SQLite databases. Run `python -m pytest -q`, `python -m compileall -q backend tests/test_app.py`, and `node --check frontend/app.js`. Multi-profile browser simulation is a manual check; cloud deployment and restore have not been tested.
+The API endpoint/method/body/access/status-code table is in `docs/API_REFERENCE.md`. Tests cover assets, password/login, role and ownership rules, capacity, waitlist promotion, cancellation, notifications and metrics using isolated SQLite databases. Run `python -m pytest -q`, `python -m compileall -q backend tests/test_app.py`, and `node --check frontend/app.js`. The user reported completing the deployed `/health` check and app walkthrough; cloud database restore, PostgreSQL concurrency behavior and production load have not been tested.
 
 ## Deployment, security and failure handling
 
-The `Dockerfile` and `cloud/README.md` document a container deployment. The operator must set a strong `APP_SECRET`, managed `DATABASE_URL`, strict CORS origins, TLS, least-privilege credentials, backups and budget alerts. SQLAlchemy parameterizes DB operations. Production also needs rate limits, audit logging, migrations, monitored error rates and restore drills. Transactions roll back on RSVP failure; polling resumes after transient disconnection. External notification queue retries and idempotency keys are future work.
+The `Dockerfile` runs the app on the port supplied by the hosting platform, and `requirements.txt` includes PostgreSQL drivers. Render supplies the Supabase `DATABASE_URL` outside source control. Verify that `APP_SECRET` is set to a strong value rather than the local default before sharing the service publicly. The host provides HTTPS; production operation still needs a security review, restricted organizer provisioning, rate limits, audit logging, a versioned migration process, monitored error rates, tested backups and restore drills. RSVP transactions roll back on failure, but PostgreSQL seat allocation is not yet protected against concurrent oversubscription. Polling resumes after transient disconnection. External notification queue retries and idempotency keys are future work.
 
 ## Scalability
 
@@ -77,8 +83,8 @@ At small scale, one API and DB work for a class demonstration. At medium scale, 
 
 ## Results, advantages, limitations and future scope
 
-The local implementation exercises event create/edit/cancel, RSVP update/cancel, capacity, waitlist, invitation, in-app notification, analytics and polling. Advantages include no hardware/cloud requirement, clear role boundaries and reproducible synthetic data. Limitations: single-process local app, polling, demo organizer self-registration, no actual cloud auth/realtime/email service, no mature schema migration stack or stress/browser suite. Future steps: managed identity, PostgreSQL row-lock implementation, WebSockets/SSE, external notification provider, audit history, admin moderation, load testing, automated browser tests and a verified deployment.
+The application exercises event create/edit/cancel, RSVP update/cancel, capacity, waitlist, invitation, in-app notification, analytics and polling. Its current student deployment runs on Render with Supabase PostgreSQL and has a reported successful health check and walkthrough. Limitations include polling, organizer self-registration, no managed cloud auth/realtime/email service, no mature schema migration stack, and no PostgreSQL concurrency or load-test evidence. Future steps: restrict organizer provisioning, implement and test PostgreSQL reservation locking, add WebSockets/SSE or external notification delivery if needed, add audit history and admin moderation, and verify backup restoration.
 
 ## Conclusion
 
-This is a runnable cloud-computing teaching project, not a claim of an already-hosted production service. It demonstrates centralized application design and transactional RSVP fundamentals locally, while identifying the concrete infrastructure and consistency work required before public deployment.
+This is a runnable cloud-computing teaching project with a student-demo deployment on Render and Supabase. The deployment demonstrates a hosted API and managed PostgreSQL, while the report identifies the consistency, security and operations work still required before treating it as a public production service.

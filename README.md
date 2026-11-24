@@ -2,7 +2,7 @@
 
 A virtual, student-friendly cloud-computing project for event publishing, invitations, attendee responses, capacity control, announcements, notifications and organizer analytics.
 
-> **Truth in deployment:** the folder contains a runnable local application and container/CI templates. No cloud account, managed database, third-party authentication, WebSocket service, or live deployment has been provisioned. See [`cloud/README.md`](cloud/README.md) for the deployment plan.
+> **Deployment status (2026-11-24):** the app is deployed as a Render Docker web service and uses Supabase PostgreSQL through its session pooler. The React frontend now supports Supabase Auth when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured on Render; existing custom-token accounts remain supported during migration. The dashboard still uses two-second polling; Supabase Realtime, WebSockets, and external notifications are not deployed. See [`cloud/README.md`](cloud/README.md) for setup and limitations.
 
 ## Problem and objectives
 
@@ -10,7 +10,7 @@ Event details, guest replies and announcements often live across messages and sp
 
 ## Features
 
-- Attendee and organizer registration/login, PBKDF2 password hashes, expiring signed tokens and server-side logout revocation.
+- Attendee and organizer registration/login through Supabase Auth when configured; FastAPI validates Supabase sessions and maps identities to app profiles. Legacy PBKDF2 accounts and signed tokens remain supported during migration.
 - Event create, read, update and soft-cancel; date/time, online meeting link, event type, deadline and capacity fields.
 - Invitations recorded by email; registered invitees receive an in-app invitation notice.
 - One RSVP per event/user; Going, Maybe and Not Going updates; attendee cancellation and organizer-only guest list.
@@ -33,14 +33,14 @@ flowchart LR
  CDN[Optional cloud CDN] --> Browser
 ```
 
-SQLite is the default local database. A managed PostgreSQL target is supported by SQLAlchemy's `DATABASE_URL` selection, but production concurrency locking and schema migrations must be adapted and tested before switching. Polling is the implemented realtime simulation. SSE, WebSockets, a managed realtime database, queues, external email/push delivery, cloud authentication and autoscaling are architecture extensions, not current implementations. Full mapping is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+SQLite is the default local database; the deployed service selects Supabase PostgreSQL through `DATABASE_URL`. PostgreSQL connectivity is enabled, but reservation concurrency locking and production schema migrations still need to be implemented and tested. Polling is the implemented realtime simulation. SSE, WebSockets, a managed realtime database, queues, external email/push delivery, cloud authentication and autoscaling are architecture extensions, not current implementations. Full mapping is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Technology choices
 
 | Option | Stack | Difficulty and cost | Tradeoffs |
 |---|---|---|---|
 | A: local simulation (implemented) | HTML/CSS/JS, FastAPI, SQLite, polling | Easy; free on your computer | Works offline; single-host database and polling only |
-| B: student cloud (recommended target) | Static React or current browser app, FastAPI, managed auth, managed PostgreSQL/realtime | Medium; free quotas and terms vary | Demonstrates managed services; provider adapters and current limits need selection |
+| B: student cloud (deployed) | React + FastAPI Docker service on Render, Supabase Auth (configurable), Supabase PostgreSQL, polling | Deployed for a student demo; provider costs and quotas vary | Set Supabase Auth URL/key on Render; PostgreSQL reservation locking and production operations need follow-up |
 | C: advanced cloud | CDN, API gateway, serverless/container API, managed DB, WebSocket, queue, monitoring | Advanced; may incur charges | More scalable and operationally complex |
 
 Cloud provider availability and free tiers change, so verify pricing, regional availability, retention and payment requirements before provisioning. Architecture alternatives are in the deployment guide.
@@ -76,13 +76,13 @@ $env:APP_SECRET = "replace-with-a-long-random-secret"
 python -m uvicorn backend.app:app --reload
 ```
 
-Open `http://127.0.0.1:8000`; interactive API docs are `/docs`; health is `/health`. The database defaults to `events.db` in this folder. To run the synthetic walkthrough, use a separate browser profile per user: register Organizer; create “Cloud Computing Workshop” with a future registration deadline and capacity 100; register Attendee A and RSVP Going; register Attendee B and RSVP Maybe then Going; confirm live counts change; test announcement, RSVP cancellation, full capacity, waitlist and unauthorized event edits. Never use real personal data.
+The React frontend runs through Vite on `http://127.0.0.1:5173`; keep FastAPI running on port 8000 for API requests. In a second terminal, change to `frontend`, run `npm ci`, then `node ./node_modules/vite/bin/vite.js --host 127.0.0.1`. Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in `.env` to enable Supabase Auth. For a production build, Docker builds the React bundle and FastAPI serves it. Interactive API docs are `/docs`; health is `/health`. The database defaults to `events.db` in this folder. To run the synthetic walkthrough, use a separate browser profile per user: create an organizer; create “Cloud Computing Workshop” with a future registration deadline and capacity 100; register attendees and test RSVP, announcements, cancellation, capacity, waitlist and unauthorized event edits. Never use real personal data.
 
 For a three-window view, open the same URL in organizer, attendee A and attendee B profiles. Browser local storage is profile-specific; server database state is shared.
 
 ## Configuration and deployment
 
-`.env.example` documents `DATABASE_URL`, `APP_SECRET` and `CORS_ORIGINS`. Never commit `.env`. For a generic container run: `docker build -t event-rsvp .` then run port 8000 and pass a strong `APP_SECRET`; mount persistent storage for SQLite or configure a managed SQL database. A free/student cloud sequence and AWS/Azure/GCP reference are in [`cloud/README.md`](cloud/README.md). Cloud resources can incur cost; set alerts and teardown unused resources.
+`.env.example` documents `DATABASE_URL`, `APP_SECRET`, `CORS_ORIGINS`, `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Never commit `.env`. The deployed Render service builds this repository's Dockerfile, reads its port from Render's `PORT` setting, and connects to Supabase PostgreSQL using `DATABASE_URL`. Set the Supabase project URL and anon key on Render to enable Supabase Auth; the service-role key must remain server-side and is not used by this app. Set `APP_SECRET` to a strong non-default value before sharing the service publicly. See [`cloud/README.md`](cloud/README.md) for the setup summary. Check provider pricing and usage limits; cloud resources can incur costs.
 
 ## API, data and errors
 
@@ -100,7 +100,7 @@ Tests cover assets, auth/passwords, role checks, event ownership/edit/cancel, RS
 
 ## Security, resilience and scale
 
-Local controls include password hashing, HMAC-signed expiring sessions, server-side revocation, Pydantic validation, event ownership checks, notification ownership checks, parameterized SQLAlchemy queries and database uniqueness. Configure strict CORS, HTTPS, a secret manager, API rate limiting, backups, structured monitoring and least-privilege database accounts before public exposure. In-memory errors are returned through FastAPI; RSVP writes roll back on failure; polling retries on the next interval after transient network failure. External notification retry queues and idempotency keys are future work.
+Local controls include Supabase Auth token validation (when configured), legacy password hashing, HMAC-signed expiring sessions, server-side revocation, Pydantic validation, event ownership checks, notification ownership checks, parameterized SQLAlchemy queries and database uniqueness. Configure strict CORS, HTTPS, a secret manager, API rate limiting, backups, structured monitoring and least-privilege database accounts before public exposure. In-memory errors are returned through FastAPI; RSVP writes roll back on failure; polling retries on the next interval after transient network failure. External notification retry queues and idempotency keys are future work.
 
 At higher volume, place stateless API replicas behind a gateway/load balancer, use managed database connections and indexes, cache public event detail, queue notifications, rate-limit RSVP bursts, and use a strongly consistent reservation transaction for hot events. Realtime fanout needs a shared broker rather than per-process memory. Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -121,4 +121,4 @@ Dockerfile                   Container image
 
 ## Limitations and future improvements
 
-The local app uses one SQLite database and polling, and organizer self-registration is demo-only. Cloud auth/realtime providers, actual email/SMS/push, invitations delivery, automatic reminders, multi-instance-safe PostgreSQL reservations, admin role, load/stress tests, browser automation, full migration tooling and a real deployment remain future work. No fake deployment result or screenshot is included.
+The local default uses SQLite; the deployed service uses Supabase PostgreSQL. Both use polling, and organizer self-registration is still enabled, so the deployment is for a controlled student demo rather than public production use. Managed cloud auth/realtime, actual email/SMS/push, invitation delivery, automatic reminders, PostgreSQL-safe concurrent seat reservations, admin role, full migration tooling, load/stress tests and automated browser tests remain future work. No deployment URL or screenshot is recorded in this repository.

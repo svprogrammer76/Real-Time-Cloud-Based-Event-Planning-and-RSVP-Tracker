@@ -29,7 +29,7 @@ flowchart LR
  API --> SEC[Secret manager]
 ```
 
-The cloud target is a design, not provisioned infrastructure. The current app implements password authentication, DB-backed accounts and polling. It does not implement third-party cloud authentication, server-side WebSockets/SSE, notification providers, CDN, autoscaling or multi-zone failover.
+The current deployment uses a Render Docker service and Supabase PostgreSQL. The React sign-in flow supports Supabase Auth when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured; FastAPI validates Supabase access tokens and maps identities to its application user records. Custom signed tokens remain supported during migration. The dashboard still polls for updates; Supabase Realtime/WebSockets, notification providers, CDN, autoscaling and multi-zone failover are not implemented.
 
 ## Concept-to-project map
 
@@ -39,7 +39,7 @@ The cloud target is a design, not provisioned infrastructure. The current app im
 | PaaS / IaaS | Managed container and database are PaaS; VM/network administration is an alternative IaaS deployment. |
 | Cloud DB / realtime DB | SQLite is local; `DATABASE_URL` supports SQLAlchemy-compatible hosted relational database. Polling simulates live shared state; cloud realtime is future work. |
 | REST / API gateway | FastAPI routes are REST resources; a gateway is an optional cloud ingress layer. |
-| AuthN / AuthZ / RBAC | PBKDF2 password hashes, signed 24-hour tokens, token revocation, attendee/organizer role and resource ownership checks. |
+| AuthN / AuthZ / RBAC | Supabase Auth sessions (when configured), legacy PBKDF2 accounts and signed tokens during migration, attendee/organizer roles and resource ownership checks. |
 | WebSockets / SSE | Architectural alternatives for server push; not implemented in this local HTTP polling version. |
 | Serverless / event-driven / functions | A future approach for notification and reminder work; current app is a long-running API. |
 | Scaling / elasticity / load balancing | Stateless replicas are a target; SQLite write lock means local single-instance use. Production needs row-level locking and load testing. |
