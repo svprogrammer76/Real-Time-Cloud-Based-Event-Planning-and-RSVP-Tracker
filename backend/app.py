@@ -30,7 +30,7 @@ def parse_deadline(value):
     return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result
 class Base(DeclarativeBase): pass
 class User(Base):
-    __tablename__='users'; id:Mapped[int]=mapped_column(primary_key=True); email:Mapped[str]=mapped_column(String(254),unique=True,index=True); name:Mapped[str]=mapped_column(String(80)); password:Mapped[str]=mapped_column(String(200)); role:Mapped[str]=mapped_column(String(20))
+    __tablename__='users'; id:Mapped[int]=mapped_column(primary_key=True); email:Mapped[str]=mapped_column(String(254),unique=True,index=True); username:Mapped[str]=mapped_column(String(50),unique=True); name:Mapped[str]=mapped_column(String(80)); password:Mapped[Optional[str]]=mapped_column(String(200),nullable=True); role:Mapped[str]=mapped_column(String(20))
 class Event(Base):
     __tablename__='events'; id:Mapped[int]=mapped_column(primary_key=True); organizer_id:Mapped[int]=mapped_column(ForeignKey('users.id'),index=True); name:Mapped[str]=mapped_column(String(120)); description:Mapped[str]=mapped_column(Text,default=''); date:Mapped[str]=mapped_column(String(10)); time:Mapped[str]=mapped_column(String(5)); venue:Mapped[str]=mapped_column(String(200)); capacity:Mapped[int]=mapped_column(Integer); deadline:Mapped[str]=mapped_column(String(40)); status:Mapped[str]=mapped_column(String(20),default='PUBLISHED'); event_type:Mapped[str]=mapped_column(String(50),default='OTHER'); end_time:Mapped[str]=mapped_column(String(5),default=''); online_link:Mapped[str]=mapped_column(String(500),default=''); updated_at:Mapped[datetime]=mapped_column(DateTime,default=utcnow)
 class RSVP(Base):
@@ -46,6 +46,15 @@ class Notification(Base):
 class RevokedToken(Base):
     __tablename__='revoked_tokens'; id:Mapped[int]=mapped_column(primary_key=True); signature:Mapped[str]=mapped_column(String(100),unique=True); expires_at:Mapped[int]=mapped_column(Integer)
 Base.metadata.create_all(engine)
+# SQLAlchemy create_all does not alter existing PostgreSQL tables. Keep profile
+# columns required by the ORM present on older Supabase schemas.
+if engine.dialect.name=='postgresql':
+    with engine.begin() as conn:
+        conn.exec_driver_sql('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS username VARCHAR(50)')
+        conn.exec_driver_sql("UPDATE public.users SET username = 'legacy_' || id::text WHERE username IS NULL")
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN username SET NOT NULL')
+        conn.exec_driver_sql('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS password VARCHAR(200)')
+        conn.exec_driver_sql("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'ATTENDEE'")
 # create_all does not add columns to an existing local database; apply safe additive SQLite migrations.
 if engine.dialect.name=='sqlite':
     with engine.begin() as conn:
@@ -69,6 +78,10 @@ def validpw(p,s):
         a,b=s.split(':'); actual=hashlib.pbkdf2_hmac('sha256',p.encode(),base64.b64decode(a),260000)
         return hmac.compare_digest(actual,base64.b64decode(b))
     except Exception:return False
+def make_username(email,user_id=None):
+    base=re.sub(r'[^a-z0-9]+','',email.split('@',1)[0].lower())[:10] or 'user'
+    suffix=re.sub(r'[^a-f0-9]','',str(user_id or secrets.token_hex(4)).lower())[:8]
+    return f'{base}_{suffix}'[:20]
 def issue(uid):
     p=base64.urlsafe_b64encode(json.dumps({'uid':uid,'exp':time.time()+86400,'jti':secrets.token_urlsafe(16)}).encode()).decode().rstrip('='); sig=base64.urlsafe_b64encode(hmac.new(SECRET.encode(),p.encode(),hashlib.sha256).digest()).decode().rstrip('='); return p+'.'+sig
 def auth(authorization:Optional[str]=Header(None),db:Session=Depends(dbdep)):
@@ -77,17 +90,21 @@ def auth(authorization:Optional[str]=Header(None),db:Session=Depends(dbdep)):
         try:
             with httpx.Client(timeout=5) as client:
                 response=client.get(os.getenv('SUPABASE_URL').rstrip('/')+'/auth/v1/user',headers={'apikey':os.getenv('SUPABASE_ANON_KEY'),'Authorization':f'Bearer {raw}'})
-            if response.status_code!=200:raise ValueError()
+        except httpx.HTTPError as error:
+            raise HTTPException(503,'Could not reach Supabase Auth') from error
+        if response.status_code!=200:raise HTTPException(401,'Supabase session is invalid or expired')
+        try:
             identity=response.json(); email=identity.get('email')
-            if not email:raise ValueError()
-            u=db.query(User).filter(func.lower(User.email)==email.lower()).first()
-            if not u:
-                metadata=identity.get('user_metadata') or {}; role=str(metadata.get('role','ATTENDEE')).upper()
-                if role not in ('ATTENDEE','ORGANIZER'):role='ATTENDEE'
-                u=User(email=email.lower(),name=str(metadata.get('full_name') or email.split('@')[0])[:80],password='supabase-auth',role=role)
-                db.add(u);db.commit();db.refresh(u)
-            return u
-        except Exception:raise HTTPException(401,'Sign in required')
+        except (ValueError,AttributeError):
+            raise HTTPException(401,'Supabase returned an invalid user profile')
+        if not email:raise HTTPException(401,'Supabase account has no email address')
+        u=db.query(User).filter(func.lower(User.email)==email.lower()).first()
+        if not u:
+            metadata=identity.get('user_metadata') or {}; role=str(metadata.get('role','ATTENDEE')).upper()
+            if role not in ('ATTENDEE','ORGANIZER'):role='ATTENDEE'
+            u=User(email=email.lower(),username=make_username(email,identity.get('id')),name=str(metadata.get('full_name') or email.split('@')[0])[:80],password=None,role=role)
+            db.add(u);db.commit();db.refresh(u)
+        return u
     try:
         p,s=raw.split('.'); want=base64.urlsafe_b64encode(hmac.new(SECRET.encode(),p.encode(),hashlib.sha256).digest()).decode().rstrip('=')
         if not hmac.compare_digest(s,want): raise ValueError()
@@ -131,7 +148,7 @@ def register(x:Register,db:Session=Depends(dbdep)):
     email=x.email.strip().lower()
     if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+',email):raise HTTPException(422,'Enter a valid email address')
     if db.query(User).filter(func.lower(User.email)==email).first():raise HTTPException(409,'Email is already registered')
-    u=User(name=x.name.strip(),email=email,password=hashpw(x.password),role=role);db.add(u);db.commit();db.refresh(u);return {'token':issue(u.id),'user':{'id':u.id,'name':u.name,'role':role}}
+    u=User(name=x.name.strip(),email=email,username=make_username(email),password=hashpw(x.password),role=role);db.add(u);db.commit();db.refresh(u);return {'token':issue(u.id),'user':{'id':u.id,'name':u.name,'role':role}}
 @app.post('/api/login')
 def login(x:Login,db:Session=Depends(dbdep)):
     u=db.query(User).filter(func.lower(User.email)==x.email.strip().lower()).first()
