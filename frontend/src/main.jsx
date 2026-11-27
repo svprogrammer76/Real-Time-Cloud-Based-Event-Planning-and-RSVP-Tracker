@@ -20,16 +20,19 @@ function AuthForm({ supabase }) {
         const { data: result, error: authError } = await supabase.auth.signUp({
           email: data.email,
           password: data.password,
-          options: { data: { full_name: data.name, role: data.role } },
+          options: { data: { username: data.username, full_name: data.username, role: data.role } },
         });
         if (authError) throw authError;
-        if (!result.session) {
+        if (result.session) {
+          window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: { token: result.session.access_token, notify: true } }));
+        } else {
           setNotice('Check your email to confirm your account, then sign in.');
           setSignup(false);
         }
       } else {
         const { data: result, error: authError } = await supabase.auth.signInWithPassword({ email: data.email, password: data.password });
         if (authError) throw authError;
+        window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: { token: result.session.access_token, notify: true } }));
       }
     } catch (cause) {
       setError(cause.message || 'Could not authenticate. Please try again.');
@@ -41,7 +44,7 @@ function AuthForm({ supabase }) {
   return <form id="login" onSubmit={submit}>
     <h2>{signup ? 'Create an account' : 'Welcome back'}</h2>
     {signup && <>
-      <input name="name" placeholder="Name" minLength="1" maxLength="80" required />
+      <input name="username" placeholder="Username" minLength="3" maxLength="50" pattern="[A-Za-z0-9_.-]+" title="Use letters, numbers, dots, underscores, or hyphens." required />
       <select name="role" defaultValue="ATTENDEE"><option>ATTENDEE</option><option>ORGANIZER</option></select>
     </>}
     <input name="email" placeholder="Email" type="email" required />
@@ -60,10 +63,12 @@ async function start() {
     const config = await response.json();
     if (!response.ok || !config.supabaseUrl || !config.supabaseAnonKey) throw new Error('Supabase Auth is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY on the API service.');
     const supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
-    supabase.auth.onAuthStateChange((_event, session) => {
+    supabase.auth.onAuthStateChange((event, session) => {
       if (session?.access_token) {
         localStorage.setItem('gather-token', session.access_token);
-        window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: session.access_token }));
+        if (event === 'INITIAL_SESSION') {
+          window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: { token: session.access_token, notify: false } }));
+        }
       } else if (localStorage.getItem('gather-token')?.split('.').length === 3) {
         window.dispatchEvent(new Event('gather:session-ended'));
       }

@@ -78,7 +78,10 @@ def validpw(p,s):
         a,b=s.split(':'); actual=hashlib.pbkdf2_hmac('sha256',p.encode(),base64.b64decode(a),260000)
         return hmac.compare_digest(actual,base64.b64decode(b))
     except Exception:return False
-def make_username(email,user_id=None):
+def make_username(email,user_id=None,preferred=None):
+    if preferred:
+        selected=re.sub(r'[^a-zA-Z0-9_.-]','',str(preferred)).strip('._-')[:50]
+        if selected:return selected
     base=re.sub(r'[^a-z0-9]+','',email.split('@',1)[0].lower())[:10] or 'user'
     suffix=re.sub(r'[^a-f0-9]','',str(user_id or secrets.token_hex(4)).lower())[:8]
     return f'{base}_{suffix}'[:20]
@@ -102,7 +105,9 @@ def auth(authorization:Optional[str]=Header(None),db:Session=Depends(dbdep)):
         if not u:
             metadata=identity.get('user_metadata') or {}; role=str(metadata.get('role','ATTENDEE')).upper()
             if role not in ('ATTENDEE','ORGANIZER'):role='ATTENDEE'
-            u=User(email=email.lower(),username=make_username(email,identity.get('id')),name=str(metadata.get('full_name') or email.split('@')[0])[:80],password=None,role=role)
+            username=make_username(email,identity.get('id'),metadata.get('username'))
+            if db.query(User.id).filter(User.username==username).first():username=make_username(email,identity.get('id'))
+            u=User(email=email.lower(),username=username,name=str(metadata.get('full_name') or username)[:80],password=None,role=role)
             db.add(u);db.commit();db.refresh(u)
         return u
     try:
