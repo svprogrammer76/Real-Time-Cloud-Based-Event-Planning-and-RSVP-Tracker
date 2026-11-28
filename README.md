@@ -33,7 +33,7 @@ flowchart LR
  CDN[Optional cloud CDN] --> Browser
 ```
 
-SQLite is the default local database; the deployed service selects Supabase PostgreSQL through `DATABASE_URL`. PostgreSQL connectivity is enabled, but reservation concurrency locking and production schema migrations still need to be implemented and tested. Polling is the implemented realtime simulation. SSE, WebSockets, a managed realtime database, queues, external email/push delivery, cloud authentication and autoscaling are architecture extensions, not current implementations. Full mapping is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+SQLite is the default local database; the deployed service selects Supabase PostgreSQL through `DATABASE_URL`. The backend applies an idempotent compatibility migration for the Supabase user-profile columns at startup. Versioned app-wide schema migrations and PostgreSQL reservation concurrency locking still need follow-up. Polling is the implemented realtime simulation. SSE, WebSockets, a managed realtime database, queues, external email/push delivery and autoscaling are architecture extensions, not current implementations. Full mapping is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Technology choices
 

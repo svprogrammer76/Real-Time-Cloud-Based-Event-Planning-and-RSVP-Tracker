@@ -30,7 +30,22 @@ def parse_deadline(value):
     return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result
 class Base(DeclarativeBase): pass
 class User(Base):
-    __tablename__='users'; id:Mapped[int]=mapped_column(primary_key=True); email:Mapped[str]=mapped_column(String(254),unique=True,index=True); username:Mapped[str]=mapped_column(String(50),unique=True); name:Mapped[str]=mapped_column(String(80)); password:Mapped[Optional[str]]=mapped_column(String(200),nullable=True); role:Mapped[str]=mapped_column(String(20))
+    __tablename__='users'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    email:Mapped[str]=mapped_column(String(254),unique=True,index=True)
+    username:Mapped[str]=mapped_column(String(50),unique=True)
+    # The signup form only collects username, role, email and password.
+    # Display/profile details can be completed later from the dashboard.
+    name:Mapped[str]=mapped_column(String(80),nullable=False,default='',server_default=text("''"))
+    bio:Mapped[str]=mapped_column(String,nullable=False,default='',server_default=text("''"))
+    interests:Mapped[str]=mapped_column(String,nullable=False,default='',server_default=text("''"))
+    profile_picture:Mapped[Optional[str]]=mapped_column(String,nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=utcnow,server_default=text('CURRENT_TIMESTAMP'))
+    # Supabase Auth owns and verifies passwords. These nullable fields are
+    # retained only for accounts made by the legacy local-auth endpoints.
+    password_hash:Mapped[Optional[str]]=mapped_column(String(200),nullable=True)
+    password:Mapped[Optional[str]]=mapped_column(String(200),nullable=True)
+    role:Mapped[str]=mapped_column(String(20),nullable=False,default='ATTENDEE',server_default=text("'ATTENDEE'"))
 class Event(Base):
     __tablename__='events'; id:Mapped[int]=mapped_column(primary_key=True); organizer_id:Mapped[int]=mapped_column(ForeignKey('users.id'),index=True); name:Mapped[str]=mapped_column(String(120)); description:Mapped[str]=mapped_column(Text,default=''); date:Mapped[str]=mapped_column(String(10)); time:Mapped[str]=mapped_column(String(5)); venue:Mapped[str]=mapped_column(String(200)); capacity:Mapped[int]=mapped_column(Integer); deadline:Mapped[str]=mapped_column(String(40)); status:Mapped[str]=mapped_column(String(20),default='PUBLISHED'); event_type:Mapped[str]=mapped_column(String(50),default='OTHER'); end_time:Mapped[str]=mapped_column(String(5),default=''); online_link:Mapped[str]=mapped_column(String(500),default=''); updated_at:Mapped[datetime]=mapped_column(DateTime,default=utcnow)
 class RSVP(Base):
@@ -45,16 +60,68 @@ class Notification(Base):
     __tablename__='notifications'; id:Mapped[int]=mapped_column(primary_key=True); user_id:Mapped[int]=mapped_column(ForeignKey('users.id'),index=True); event_id:Mapped[int]=mapped_column(ForeignKey('events.id'),index=True); kind:Mapped[str]=mapped_column(String(40)); message:Mapped[str]=mapped_column(String(500)); is_read:Mapped[bool]=mapped_column(Boolean,default=False); created_at:Mapped[datetime]=mapped_column(DateTime,default=utcnow)
 class RevokedToken(Base):
     __tablename__='revoked_tokens'; id:Mapped[int]=mapped_column(primary_key=True); signature:Mapped[str]=mapped_column(String(100),unique=True); expires_at:Mapped[int]=mapped_column(Integer)
+# Older local SQLite files predate the profile fields and username column.
+# Add them before create_all tries to create indexes on the existing table.
+if engine.dialect.name=='sqlite':
+    with engine.begin() as conn:
+        has_users=conn.exec_driver_sql("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").first()
+        if has_users:
+            user_columns={row[1] for row in conn.exec_driver_sql('PRAGMA table_info(users)').all()}
+            for name,definition in {
+                'username':'VARCHAR(50)',
+                'name':"VARCHAR(80) NOT NULL DEFAULT ''",
+                'bio':"VARCHAR NOT NULL DEFAULT ''",
+                'interests':"VARCHAR NOT NULL DEFAULT ''",
+                'profile_picture':'VARCHAR',
+                'created_at':'DATETIME',
+                'password_hash':'VARCHAR(200)',
+                'password':'VARCHAR(200)',
+                'role':"VARCHAR(20) NOT NULL DEFAULT 'ATTENDEE'",
+            }.items():
+                if name not in user_columns:
+                    conn.exec_driver_sql(f'ALTER TABLE users ADD COLUMN {name} {definition}')
+            conn.exec_driver_sql("UPDATE users SET username = 'legacy_' || id WHERE username IS NULL OR username = ''")
+            conn.exec_driver_sql("UPDATE users SET name = '' WHERE name IS NULL")
+            conn.exec_driver_sql("UPDATE users SET bio = '' WHERE bio IS NULL")
+            conn.exec_driver_sql("UPDATE users SET interests = '' WHERE interests IS NULL")
+            conn.exec_driver_sql('UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL')
+            conn.exec_driver_sql("UPDATE users SET role = 'ATTENDEE' WHERE role IS NULL OR role NOT IN ('ATTENDEE', 'ORGANIZER')")
 Base.metadata.create_all(engine)
-# SQLAlchemy create_all does not alter existing PostgreSQL tables. Keep profile
-# columns required by the ORM present on older Supabase schemas.
+if engine.dialect.name=='sqlite':
+    with engine.begin() as conn:
+        conn.exec_driver_sql('CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON users(username)')
+# SQLAlchemy create_all does not alter existing PostgreSQL tables. Align the
+# existing Supabase public.users table with the profile model and make fields
+# not present on the signup form safe to omit from future inserts.
 if engine.dialect.name=='postgresql':
     with engine.begin() as conn:
         conn.exec_driver_sql('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS username VARCHAR(50)')
         conn.exec_driver_sql("UPDATE public.users SET username = 'legacy_' || id::text WHERE username IS NULL")
         conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN username SET NOT NULL')
+        conn.exec_driver_sql("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS name VARCHAR(80) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("UPDATE public.users SET name = '' WHERE name IS NULL")
+        conn.exec_driver_sql("ALTER TABLE public.users ALTER COLUMN name SET DEFAULT ''")
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN name SET NOT NULL')
+        conn.exec_driver_sql("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS bio VARCHAR NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("UPDATE public.users SET bio = '' WHERE bio IS NULL")
+        conn.exec_driver_sql("ALTER TABLE public.users ALTER COLUMN bio SET DEFAULT ''")
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN bio SET NOT NULL')
+        conn.exec_driver_sql("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS interests VARCHAR NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("UPDATE public.users SET interests = '' WHERE interests IS NULL")
+        conn.exec_driver_sql("ALTER TABLE public.users ALTER COLUMN interests SET DEFAULT ''")
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN interests SET NOT NULL')
+        conn.exec_driver_sql('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS profile_picture VARCHAR')
+        conn.exec_driver_sql('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP')
+        conn.exec_driver_sql('UPDATE public.users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL')
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP')
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN created_at SET NOT NULL')
+        conn.exec_driver_sql('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(200)')
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN password_hash DROP NOT NULL')
         conn.exec_driver_sql('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS password VARCHAR(200)')
-        conn.exec_driver_sql("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'ATTENDEE'")
+        conn.exec_driver_sql("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'ATTENDEE'")
+        conn.exec_driver_sql("UPDATE public.users SET role = 'ATTENDEE' WHERE role IS NULL OR role NOT IN ('ATTENDEE', 'ORGANIZER')")
+        conn.exec_driver_sql("ALTER TABLE public.users ALTER COLUMN role SET DEFAULT 'ATTENDEE'")
+        conn.exec_driver_sql('ALTER TABLE public.users ALTER COLUMN role SET NOT NULL')
 # create_all does not add columns to an existing local database; apply safe additive SQLite migrations.
 if engine.dialect.name=='sqlite':
     with engine.begin() as conn:
@@ -106,8 +173,11 @@ def auth(authorization:Optional[str]=Header(None),db:Session=Depends(dbdep)):
             metadata=identity.get('user_metadata') or {}; role=str(metadata.get('role','ATTENDEE')).upper()
             if role not in ('ATTENDEE','ORGANIZER'):role='ATTENDEE'
             username=make_username(email,identity.get('id'),metadata.get('username'))
-            if db.query(User.id).filter(User.username==username).first():username=make_username(email,identity.get('id'))
-            u=User(email=email.lower(),username=username,name=str(metadata.get('full_name') or username)[:80],password=None,role=role)
+            if db.query(User.id).filter(func.lower(User.username)==username.lower()).first():
+                username=make_username(email,identity.get('id'))
+                while db.query(User.id).filter(func.lower(User.username)==username.lower()).first():
+                    username=make_username(email,identity.get('id'),secrets.token_hex(4))
+            u=User(email=email.lower(),username=username,password_hash=None,password=None,role=role)
             db.add(u);db.commit();db.refresh(u)
         return u
     try:
@@ -120,8 +190,9 @@ def auth(authorization:Optional[str]=Header(None),db:Session=Depends(dbdep)):
         if not u: raise ValueError()
         return u
     except Exception: raise HTTPException(401,'Sign in required')
-class Register(BaseModel): name:str=Field(min_length=1,max_length=80); email:str=Field(min_length=5,max_length=254); password:str=Field(min_length=10,max_length=128); role:str='ATTENDEE'
+class Register(BaseModel): username:str=Field(min_length=3,max_length=50,pattern=r'^[A-Za-z0-9_.-]+$'); email:str=Field(min_length=5,max_length=254); password:str=Field(min_length=10,max_length=128); role:str='ATTENDEE'
 class Login(BaseModel): email:str; password:str
+class ProfileUpdate(BaseModel): name:str=Field(min_length=1,max_length=80); bio:str=Field(default='',max_length=1000); interests:str=Field(default='',max_length=500); profile_picture:Optional[str]=Field(default=None,max_length=500)
 class EventIn(BaseModel): name:str=Field(min_length=3,max_length=120); description:str=Field(default='',max_length=3000); date:str; time:str; end_time:str=''; venue:str=Field(min_length=1,max_length=200); capacity:int=Field(gt=0,le=100000); deadline:str; event_type:str='OTHER'; online_link:str=''
 class RSVPIn(BaseModel): status:str
 class AnnouncementIn(BaseModel): title:str=Field(min_length=2,max_length=120); message:str=Field(min_length=1,max_length=3000)
@@ -153,12 +224,14 @@ def register(x:Register,db:Session=Depends(dbdep)):
     email=x.email.strip().lower()
     if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+',email):raise HTTPException(422,'Enter a valid email address')
     if db.query(User).filter(func.lower(User.email)==email).first():raise HTTPException(409,'Email is already registered')
-    u=User(name=x.name.strip(),email=email,username=make_username(email),password=hashpw(x.password),role=role);db.add(u);db.commit();db.refresh(u);return {'token':issue(u.id),'user':{'id':u.id,'name':u.name,'role':role}}
+    username=x.username.strip()
+    if db.query(User.id).filter(func.lower(User.username)==username.lower()).first():raise HTTPException(409,'Username is already taken')
+    u=User(email=email,username=username,password=hashpw(x.password),role=role);db.add(u);db.commit();db.refresh(u);return {'token':issue(u.id),'user':{'id':u.id,'name':u.name or u.username,'role':role}}
 @app.post('/api/login')
 def login(x:Login,db:Session=Depends(dbdep)):
     u=db.query(User).filter(func.lower(User.email)==x.email.strip().lower()).first()
     if not u or not validpw(x.password,u.password):raise HTTPException(401,'Incorrect email or password')
-    return {'token':issue(u.id),'user':{'id':u.id,'name':u.name,'role':u.role}}
+    return {'token':issue(u.id),'user':{'id':u.id,'name':u.name or u.username,'role':u.role}}
 @app.post('/api/logout')
 def logout(authorization:Optional[str]=Header(None),u:User=Depends(auth),db:Session=Depends(dbdep)):
     raw=authorization.removeprefix('Bearer ');signature=raw.rsplit('.',1)[-1]
@@ -166,7 +239,17 @@ def logout(authorization:Optional[str]=Header(None),u:User=Depends(auth),db:Sess
     if not db.query(RevokedToken).filter_by(signature=signature).first():db.add(RevokedToken(signature=signature,expires_at=int(data['exp'])));db.commit()
     return {'logged_out':True}
 @app.get('/api/me')
-def me(u:User=Depends(auth)):return {'id':u.id,'name':u.name,'email':u.email,'role':u.role}
+def me(u:User=Depends(auth)):
+    return {'id':u.id,'username':u.username,'name':u.name,'email':u.email,'role':u.role,'bio':u.bio,'interests':u.interests,'profile_picture':u.profile_picture,'created_at':u.created_at.isoformat() if u.created_at else None}
+@app.put('/api/me/profile')
+def update_profile(x:ProfileUpdate,u:User=Depends(auth),db:Session=Depends(dbdep)):
+    name=x.name.strip()
+    if not name:raise HTTPException(422,'Display name is required to save your profile')
+    picture=x.profile_picture.strip() if x.profile_picture else ''
+    if picture and not picture.lower().startswith(('https://','http://')):raise HTTPException(422,'Profile picture URL must use HTTP or HTTPS')
+    u.name=name;u.bio=x.bio.strip();u.interests=x.interests.strip();u.profile_picture=picture or None
+    db.commit();db.refresh(u)
+    return {'id':u.id,'username':u.username,'name':u.name,'email':u.email,'role':u.role,'bio':u.bio,'interests':u.interests,'profile_picture':u.profile_picture,'created_at':u.created_at.isoformat() if u.created_at else None}
 def counts(db,e):
     d=dict(db.query(RSVP.status,func.count(RSVP.id)).filter_by(event_id=e.id).group_by(RSVP.status).all());g=d.get('GOING',0)
     waiting=db.query(Waitlist).filter_by(event_id=e.id,status='WAITING').count()
@@ -174,7 +257,7 @@ def counts(db,e):
 def view(db,e,viewer_id=None):
     org=db.get(User,e.organizer_id);current=counts(db,e);status='FULL' if current['full'] and e.status=='PUBLISHED' else e.status
     my_status=db.query(RSVP.status).filter_by(event_id=e.id,user_id=viewer_id).scalar() if viewer_id else None
-    return {'id':e.id,'organizer_id':e.organizer_id,'organizer':org.name,'name':e.name,'description':e.description,'date':e.date,'time':e.time,'end_time':e.end_time,'venue':e.venue,'online_link':e.online_link,'event_type':e.event_type,'deadline':e.deadline,'capacity':e.capacity,'status':status,'updated_at':e.updated_at.isoformat() if e.updated_at else None,'my_status':my_status,**current}
+    return {'id':e.id,'organizer_id':e.organizer_id,'organizer':org.name or org.username,'name':e.name,'description':e.description,'date':e.date,'time':e.time,'end_time':e.end_time,'venue':e.venue,'online_link':e.online_link,'event_type':e.event_type,'deadline':e.deadline,'capacity':e.capacity,'status':status,'updated_at':e.updated_at.isoformat() if e.updated_at else None,'my_status':my_status,**current}
 @app.get('/api/events')
 def events(u:User=Depends(auth),db:Session=Depends(dbdep)):return [view(db,e,u.id) for e in db.query(Event).filter(Event.status=='PUBLISHED').order_by(Event.date,Event.time).all()]
 @app.post('/api/events',status_code=201)
@@ -316,7 +399,7 @@ def event_rsvps(eid:int,u:User=Depends(auth),db:Session=Depends(dbdep)):
     if not e:raise HTTPException(404,'Event not found')
     if e.organizer_id!=u.id:raise HTTPException(403,'Organizer access required')
     rows=db.query(RSVP).filter_by(event_id=eid).all()
-    return {'counts':counts(db,e),'attendees':[{'name':db.get(User,r.user_id).name,'email':db.get(User,r.user_id).email,'status':r.status} for r in rows],'waitlist':[{'name':db.get(User,w.user_id).name,'position':i+1} for i,w in enumerate(db.query(Waitlist).filter_by(event_id=eid,status='WAITING').order_by(Waitlist.joined_at).all())]}
+    return {'counts':counts(db,e),'attendees':[{'name':db.get(User,r.user_id).name or db.get(User,r.user_id).username,'email':db.get(User,r.user_id).email,'status':r.status} for r in rows],'waitlist':[{'name':db.get(User,w.user_id).name or db.get(User,w.user_id).username,'position':i+1} for i,w in enumerate(db.query(Waitlist).filter_by(event_id=eid,status='WAITING').order_by(Waitlist.joined_at).all())]}
 @app.post('/api/events/{eid}/announcements',status_code=201)
 def announce(eid:int,x:AnnouncementIn,u:User=Depends(auth),db:Session=Depends(dbdep)):
     e=db.get(Event,eid)

@@ -20,11 +20,14 @@ function AuthForm({ supabase }) {
         const { data: result, error: authError } = await supabase.auth.signUp({
           email: data.email,
           password: data.password,
-          options: { data: { username: data.username, full_name: data.username, role: data.role } },
+          options: {
+            data: { username: data.username, role: data.role },
+            emailRedirectTo: window.location.origin,
+          },
         });
         if (authError) throw authError;
         if (result.session) {
-          window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: { token: result.session.access_token, notify: true } }));
+          window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: { token: result.session.access_token, notify: true, action: 'Sign-up' } }));
         } else {
           setNotice('Check your email to confirm your account, then sign in.');
           setSignup(false);
@@ -32,7 +35,7 @@ function AuthForm({ supabase }) {
       } else {
         const { data: result, error: authError } = await supabase.auth.signInWithPassword({ email: data.email, password: data.password });
         if (authError) throw authError;
-        window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: { token: result.session.access_token, notify: true } }));
+        window.dispatchEvent(new CustomEvent('gather:authenticated', { detail: { token: result.session.access_token, notify: true, action: 'Sign-in' } }));
       }
     } catch (cause) {
       setError(cause.message || 'Could not authenticate. Please try again.');

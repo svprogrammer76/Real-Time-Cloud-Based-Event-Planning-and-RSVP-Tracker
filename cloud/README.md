@@ -10,6 +10,14 @@ Local development still uses SQLite by default. The deployed service uses Postgr
 
 The current student setup uses one Render Docker web service for both the FastAPI API and browser assets, plus Supabase PostgreSQL. Render builds from the GitHub repository and deploys on pushed changes. Supabase's session-pooler URL is supplied as `DATABASE_URL`; `APP_SECRET` is a separate Render secret. The service's `/health` route checks database reachability. Verify provider pricing, quotas, sleep/retention limits and backups in the provider dashboards; terms and costs can change.
 
+### Signup and the `public.users` profile
+
+The signup form collects exactly four values: username, role, email and password. Supabase Auth stores and checks the email/password credentials in its `auth.users` table. After authentication, FastAPI creates a minimal app identity in `public.users` so events and RSVPs can reference it. It does not invent the user's display name, bio, interests or picture: those profile fields stay blank until the user chooses to save them in the dashboard's Profile section. Supabase-auth accounts do not need a local `password` or `password_hash` value.
+
+On PostgreSQL startup, FastAPI runs an idempotent compatibility migration against `public.users`: it adds any missing app columns, normalizes legacy nulls, adds empty defaults for profile-only fields, and makes the legacy password-hash column nullable. This uses the existing `DATABASE_URL` connection and requires that its database role can alter `public.users`. The app does not need a Supabase Auth trigger; it provisions the minimal row when the authenticated client first calls `/api/me`.
+
+To require email verification, enable **Confirm email** under the Supabase Auth email provider. Signup sends the current app origin as its confirmation redirect. Add the Render app origin to Supabase Auth's allowed redirect URLs and set the Site URL appropriately. With confirmation enabled, signup shows a check-your-email notice while Supabase withholds the session; after the confirmation link returns to the app, the Supabase client picks up the session and opens the dashboard. The Profile section is available there and does not gate event or RSVP features.
+
 1. Connect the GitHub repository to a Render Docker web service; the root `Dockerfile` builds the app.
 2. Set `DATABASE_URL` to the session-pooler connection string copied from Supabase's Connect dialog. Keep its host and project-qualified username exactly as supplied; do not commit the URL.
 3. Set a long random `APP_SECRET` in Render's environment-variable settings. Do not use the local default; verify the value in the service settings.
@@ -17,7 +25,7 @@ The current student setup uses one Render Docker web service for both the FastAP
 5. Deploy and check `/health`; it should return `{"ok":true,"database":"reachable"}`. Test the browser app with synthetic accounts and event data.
 6. Review Supabase backup/retention options and provider usage limits. The service URL is intentionally not embedded in this repository.
 
-Important limitation: event capacity uses SQLite `BEGIN IMMEDIATE` only when the selected dialect is SQLite. The deployed PostgreSQL RSVP flow does not yet use an event-row lock or atomic conditional reservation, so concurrent requests may oversubscribe an event. This deployment is appropriate for a controlled student demo, not high-concurrency public production. Add PostgreSQL locking and concurrency tests before relying on strict capacity enforcement. Startup `create_all` and additive SQLite migrations are not a versioned production migration process.
+Important limitation: event capacity uses SQLite `BEGIN IMMEDIATE` only when the selected dialect is SQLite. The deployed PostgreSQL RSVP flow does not yet use an event-row lock or atomic conditional reservation, so concurrent requests may oversubscribe an event. This deployment is appropriate for a controlled student demo, not high-concurrency public production. Add PostgreSQL locking and concurrency tests before relying on strict capacity enforcement. The startup user-schema compatibility migration is additive and idempotent, but `create_all` and these startup migrations are not a general versioned production migration process.
 
 ## Advanced AWS reference
 
